@@ -8,8 +8,16 @@ const rl = readline.createInterface({
   output: process.stdout,
 });
 
-import { icons, startingBoard, type Board, type Piece } from "./src/pieces.ts";
+import { icons, startingBoard, type Board, type Piece, type Position, type Vertex } from "./src/pieces.ts";
 import chalk from "chalk";
+
+const DISABLE_LOGS = false;
+
+const log = (str: string) => {
+  if (!DISABLE_LOGS) {
+    console.log(str);
+  }
+}
 
 const getColor = (player: 1 | 2) => {
   if (player === 1) {
@@ -35,25 +43,22 @@ const wrapPieceIcon = (icon?: string, withPointer = false, isSelected = false) =
 
 
 
-const renderBoard = (board: Board, pointerPosition?: [number, number], selectedPiece?: Piece | null) => {
-  const capturedPieces: { [key in 1 | 2]: Piece[]} = {
-    1: [],
-    2: [],
+const renderBoard = (board: Board, pointerPosition?: [number, number], selectedPiece?: Piece | null, capturedPieces: Piece[] = []) => {
+  const teamCapturedPieces: { [key in 1 | 2]: Piece[] } = {
+    1: capturedPieces.filter((piece) => piece.player === 2),
+    2: capturedPieces.filter((piece) => piece.player === 1),
   };
   const border = "\n  +---+---+---+---+---+---+---+---+\n";
   let renderedBoard = border;
   renderedBoard += board.map((row, rowIndex) => {
     const rowString = row.map((piece, columnIndex) => {
-      const isPointer = pointerPosition && pointerPosition[0] === 7-rowIndex && pointerPosition[1] === columnIndex;
+      const isPointer = pointerPosition && pointerPosition[0] === rowIndex && pointerPosition[1] === columnIndex;
       const emptyPosition = " ";
       if (!piece) {
         return wrapPieceIcon(emptyPosition, isPointer);
       }
+
       const isSelected = selectedPiece?.position === piece.position;
-      if (!piece.position) {
-        capturedPieces[piece.player === 1 ? 2 : 1].push(piece as Piece);
-        return wrapPieceIcon(emptyPosition, isPointer);
-      }
       const color = getColor(piece.player);
       return color(wrapPieceIcon(`${icons[piece.type]}`, isPointer, isSelected));
     }).join("|")
@@ -61,7 +66,7 @@ const renderBoard = (board: Board, pointerPosition?: [number, number], selectedP
   }).join(border);
   renderedBoard += border + "    a   b   c   d   e   f   g   h";
 
-  Object.entries(capturedPieces).forEach(([player, pieces]) => {
+  Object.entries(teamCapturedPieces).forEach(([player, pieces]) => {
     const capturedIcons = pieces.map((piece: Piece) => {
       const pieceColor = getColor(piece.player);
       const icon = icons[piece.type];
@@ -74,16 +79,64 @@ const renderBoard = (board: Board, pointerPosition?: [number, number], selectedP
   console.log(renderedBoard);
 }
 
-const getPiece = (board: Board, pointer: [number, number]) => {
+const getPiece = (board: Board, pointer: Vertex) => {
   const [row, column] = pointer;
-  const piece = board[7 - row][column];
+  const piece = board[row][column];
   return piece;
 }
+
+const positionToVertex = (coordinate: Position): Vertex => {
+  const [columnLetter, rowNumber] = coordinate.split('');
+  const column = columnLetter.charCodeAt(0) - 'a'.charCodeAt(0);
+  const row = 8 - parseInt(rowNumber);
+  return [row, column];
+};
+
+const vertexToPosition = (vertex: Vertex): Position => {
+  const [row, column] = vertex;
+  const columnLetter = String.fromCharCode('a'.charCodeAt(0) + column);
+  const rowNumber = (8 - row).toString();
+  return `${columnLetter}${rowNumber}` as Position;
+}
+
+const movePiece = ({
+  board,
+  piece,
+  position,
+  vertex,
+}: { board: Board, piece: Piece, position?: Position, vertex?: Vertex }) => {
+  if (!piece.position || (!position && !vertex)) {
+    return;
+  }
+  const newVertex = vertex ?? positionToVertex(position!);
+  const newPosition = position ?? vertexToPosition(vertex!);
+  const oldVertex = positionToVertex(piece.position!);
+  board[newVertex[0]][newVertex[1]] = piece;
+  board[oldVertex[0]][oldVertex[1]] = null;
+  piece.position = newPosition;
+};
+
+const removePiece = ({
+  board,
+  piece,
+}: { board: Board, piece: Piece }) => {
+  if (!piece.position) {
+    return;
+  }
+  const oldVertex = positionToVertex(piece.position!);
+  board[oldVertex[0]][oldVertex[1]] = null;
+  piece.position = undefined;
+};
+
+
 const run = async () => {
-  let pointer: [number, number] = [0, 0];
+  let pointer: [number, number] = [7, 0]; // Bottom left
   let lastPointer: [number, number] = [0, 0];
   let selectedPiece: Piece | null = null;
   let shouldUpdateBoard = false;
+  const board = [...startingBoard] as Board;
+
+  const allPieces = board.flat().filter((piece) => piece !== null) as Piece[];
   
   // move cursor with arrow keys
   rl.input.on("keypress", (_string: string, key: { name: string, ctrl: boolean }) => {
@@ -91,10 +144,10 @@ const run = async () => {
       process.exit();
     }
     if (key.name === "up") {
-      pointer[0] = Math.min(pointer[0] + 1, 7);
+      pointer[0] = Math.max(pointer[0] - 1, 0);
       shouldUpdateBoard = true;
     } else if (key.name === "down") {
-      pointer[0] = Math.max(pointer[0] - 1, 0);
+      pointer[0] = Math.min(pointer[0] + 1, 7);
       shouldUpdateBoard = true;
     } else if (key.name === "left") {
       pointer[1] = Math.max(pointer[1] - 1, 0);
@@ -102,21 +155,26 @@ const run = async () => {
     } else if (key.name === "right") {
       pointer[1] = Math.min(pointer[1] + 1, 7);
       shouldUpdateBoard = true;
-    } else if (key.name === "m") {
-      if (selectedPiece) {
-        // //move piece
-        // const [row, column] = pointer;
-        // const newBoard = [...startingBoard];
-        // newBoard[7-row][column] = selectedPiece;
-        // newBoard[7-selectedPiece.position[0]][selectedPiece.position[1]] = null;
-        // startingBoard = newBoard;
-        // selectedPiece = null;
+    } else if (key.name === "space") {
+      if (selectedPiece?.position) {
+
+        const pieceToRemove = getPiece(board, pointer);
+        if (pieceToRemove) {
+          removePiece({ board, piece: pieceToRemove });
+        }
+
+        movePiece({
+          board,
+          piece: selectedPiece,
+          vertex: pointer,
+        });
+        selectedPiece = null;
+        shouldUpdateBoard = true;
       } else {
         //select piece
-        const piece = getPiece(startingBoard, pointer);
+        const piece = getPiece(board, pointer);
         if (piece) {
           selectedPiece = piece;
-          // console.log(`selected piece: ${ piece.type } at ${ piece.position }`);
           shouldUpdateBoard = true;
         }
       }
@@ -138,15 +196,16 @@ const run = async () => {
   }
   
   
-  renderBoard(startingBoard, pointer);
+  renderBoard(board, pointer);
   while (true) {
     
     if (shouldUpdateBoard) {
+      const capturedPieces = allPieces.filter((piece) => !piece.position);
       shouldUpdateBoard = false;
       lastPointer[0] = pointer[0];
       lastPointer[1] = pointer[1];
       resetPosition();
-      renderBoard(startingBoard, pointer, selectedPiece);
+      renderBoard(startingBoard, pointer, selectedPiece, capturedPieces);
       readline.clearLine(process.stdout, 0)
     }
     await new Promise((resolve) => setTimeout(() => {
